@@ -68,17 +68,29 @@ async function verifyRequestUser(req, res) {
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
   if (!userId || !token) {
+    console.warn(`[auth] Missing auth header data for ${req.method} ${req.originalUrl}. user-id present: ${Boolean(userId)}, token present: ${Boolean(token)}`);
     res.status(401).json({ message: 'user-id and Firebase ID token are required' });
     return null;
   }
 
-  const decodedToken = await auth.verifyIdToken(token);
+  let decodedToken;
+
+  try {
+    decodedToken = await auth.verifyIdToken(token);
+  } catch (error) {
+    console.error(`[auth] Firebase ID token verification failed for ${req.method} ${req.originalUrl}.`);
+    console.error(`[auth] Verification error: ${error.code || 'unknown'} ${error.message}`);
+    res.status(401).json({ message: 'Invalid or expired Firebase ID token' });
+    return null;
+  }
 
   if (decodedToken.uid !== userId) {
+    console.warn(`[auth] Token uid mismatch for ${req.method} ${req.originalUrl}. header uid: ${userId}, token uid: ${decodedToken.uid}`);
     res.status(403).json({ message: 'Token does not match user-id' });
     return null;
   }
 
+  req.firebaseUser = decodedToken;
   return userId;
 }
 
@@ -303,12 +315,20 @@ app.post('/api/users', asyncHandler(async (req, res) => {
   if (!requestUserId) return;
 
   const { id, name, email } = req.body;
+  const tokenUser = req.firebaseUser || {};
 
-  if (!id || !email || id !== requestUserId) {
-    return res.status(400).json({ message: 'Valid id and email are required' });
+  if (id && id !== requestUserId) {
+    return res.status(400).json({ message: 'User id must match the verified Firebase token' });
   }
 
-  const userRef = db.collection('users').doc(id);
+  const userEmail = email || tokenUser.email;
+  const userName = name || tokenUser.name || tokenUser.email || 'User';
+
+  if (!userEmail) {
+    return res.status(400).json({ message: 'A verified email is required to create a user' });
+  }
+
+  const userRef = db.collection('users').doc(requestUserId);
   const existingUser = await userRef.get();
 
   if (existingUser.exists) {
@@ -316,9 +336,9 @@ app.post('/api/users', asyncHandler(async (req, res) => {
   }
 
   const user = {
-    id,
-    name: name || 'User',
-    email,
+    id: requestUserId,
+    name: userName,
+    email: userEmail,
     partnerId: null,
     inviteCode: await createUniqueInviteCode()
   };
@@ -543,8 +563,10 @@ app.delete('/api/items/:id', asyncHandler(async (req, res) => {
   res.status(204).send();
 }));
 
-app.use((error, _req, res, _next) => {
-  console.error(error);
+app.use((error, req, res, _next) => {
+  console.error(`[server] Unhandled error for ${req.method} ${req.originalUrl}`);
+  console.error(`[server] ${error.code || 'error'}: ${error.message}`);
+  if (error.stack) console.error(error.stack);
   res.status(500).json({ message: 'Server error' });
 });
 
