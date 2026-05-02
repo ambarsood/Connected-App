@@ -23,6 +23,15 @@ function apiPath(path) {
   return `${apiBaseUrl}${path}`;
 }
 
+async function responseError(response, fallbackMessage) {
+  try {
+    const data = await response.json();
+    return new Error(data.message || fallbackMessage);
+  } catch {
+    return new Error(fallbackMessage);
+  }
+}
+
 function App() {
   const [authUser, setAuthUser] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -89,7 +98,7 @@ function App() {
       })
     });
 
-    if (!response.ok) throw new Error('Could not create user');
+    if (!response.ok) throw await responseError(response, 'Could not create user');
     return response.json();
   }
 
@@ -98,7 +107,7 @@ function App() {
 
     const response = await fetch(apiPath('/api/user'), { headers: await getAuthHeaders(currentUser) });
 
-    if (!response.ok) throw new Error('Could not load profile');
+    if (!response.ok) throw await responseError(response, 'Could not load profile');
 
     const nextProfile = await response.json();
     setProfile(nextProfile);
@@ -110,7 +119,7 @@ function App() {
 
     const response = await fetch(apiPath('/api/connections'), { headers: await getAuthHeaders(currentUser) });
 
-    if (!response.ok) throw new Error('Could not load connections');
+    if (!response.ok) throw await responseError(response, 'Could not load connections');
 
     const nextConnections = await response.json();
     setConnections(nextConnections);
@@ -130,7 +139,8 @@ function App() {
       fetch(apiPath(`/api/items/calendar?${params.toString()}`), { headers: await getAuthHeaders(currentUser) })
     ]);
 
-    if (!itemsResponse.ok || !calendarResponse.ok) throw new Error('Could not load items');
+    if (!itemsResponse.ok) throw await responseError(itemsResponse, 'Could not load items');
+    if (!calendarResponse.ok) throw await responseError(calendarResponse, 'Could not load calendar items');
 
     setItems(await itemsResponse.json());
     setCalendarItems(await calendarResponse.json());
@@ -181,8 +191,8 @@ function App() {
         const nextConnections = await loadConnections(currentUser);
         const nextConnectionId = chooseActiveConnection(nextConnections);
         await loadItems(nextConnectionId, currentUser);
-      } catch {
-        setMessage('Could not load your account. Check Firebase configuration.');
+      } catch (error) {
+        setMessage(`Could not load your account: ${error.message || 'Check Firebase configuration.'}`);
       } finally {
         setLoading(false);
       }
