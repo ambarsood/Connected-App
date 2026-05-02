@@ -488,11 +488,14 @@ app.post('/api/items', asyncHandler(async (req, res) => {
   const user = await requireUser(req, res);
   if (!user) return;
 
-  const { category, type, title, notes = '', connectionId, date = null } = req.body;
+  const { category, type, title, notes = '', connectionId, date = null, status } = req.body;
   const userConnection = await requireConnection(user.id, connectionId, res);
   if (!userConnection) return;
   const nextCategory = normalizeCategory(category, type);
   const nextDate = normalizeDate(date);
+  const requestedStatus = validStatuses.includes(status) ? status : statusFromDate(nextDate);
+  const nextStatus = requestedStatus === 'done' ? 'done' : nextDate ? 'scheduled' : requestedStatus;
+  const itemDate = nextStatus === 'wishlist' ? null : nextDate;
 
   if (!nextCategory) {
     return res.status(400).json({ message: 'Invalid item category' });
@@ -502,6 +505,10 @@ app.post('/api/items', asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'Title is required' });
   }
 
+  if (nextStatus === 'scheduled' && !itemDate) {
+    return res.status(400).json({ message: 'Scheduled items require a date' });
+  }
+
   const now = new Date().toISOString();
   const item = {
     userId: user.id,
@@ -509,8 +516,8 @@ app.post('/api/items', asyncHandler(async (req, res) => {
     category: nextCategory,
     title: title.trim(),
     notes: notes.trim(),
-    status: statusFromDate(nextDate),
-    date: nextDate,
+    status: nextStatus,
+    date: itemDate,
     createdAt: now
   };
 

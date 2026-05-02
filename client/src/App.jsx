@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import { auth, firebaseReady, googleProvider } from './firebase.js';
 
@@ -48,12 +48,16 @@ function App() {
   const [notes, setNotes] = useState('');
   const [date, setDate] = useState('');
   const [category, setCategory] = useState('movie');
+  const [addMode, setAddMode] = useState('');
   const [inviteCode, setInviteCode] = useState('');
   const [message, setMessage] = useState('');
   const [toast, setToast] = useState('');
   const [loading, setLoading] = useState(true);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isConnectOpen, setIsConnectOpen] = useState(false);
+  const [isFriendsOpen, setIsFriendsOpen] = useState(false);
+  const [isTourOpen, setIsTourOpen] = useState(false);
+  const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
 
   const activeTabMeta = tabs.find((tab) => tab.id === activeTab);
   const activeConnection = connections.find((connection) => connection.connectionId === activeConnectionId);
@@ -246,6 +250,7 @@ function App() {
     event.preventDefault();
 
     if (!title.trim() || !activeConnectionId) return;
+    if (addMode === 'scheduled' && !date) return;
 
     const response = await fetch(apiPath('/api/items'), {
       method: 'POST',
@@ -258,7 +263,8 @@ function App() {
         category,
         title,
         notes,
-        date: date || null
+        status: addMode === 'scheduled' ? 'scheduled' : 'wishlist',
+        date: addMode === 'scheduled' ? date : null
       })
     });
 
@@ -271,6 +277,7 @@ function App() {
     setNotes('');
     setDate('');
     setCategory('movie');
+    setAddMode('');
     setMessage('');
     setIsAddModalOpen(false);
     setToast('Item added');
@@ -374,6 +381,9 @@ function App() {
         authUser={authUser}
         connections={connections}
         onAddConnection={() => setIsConnectOpen(true)}
+        onOpenFriends={() => setIsFriendsOpen(true)}
+        onOpenPrivacy={() => setIsPrivacyOpen(true)}
+        onReplayTour={() => setIsTourOpen(true)}
         onSignOut={handleSignOut}
         onSwitchConnection={switchConnection}
         profile={profile}
@@ -408,14 +418,8 @@ function App() {
                 }}
               />
               <CategoryFilter categoryFilter={categoryFilter} onChange={setCategoryFilter} />
-              <ViewToggle
-                onChange={(mode) => {
-                  setViewMode(mode);
-                  if (mode === 'calendar') setActiveTab('scheduled');
-                }}
-                viewMode={viewMode}
-              />
-              {viewMode === 'list' ? (
+              {activeTab === 'scheduled' ? <ViewToggle onChange={setViewMode} viewMode={viewMode} /> : null}
+              {activeTab !== 'scheduled' || viewMode === 'list' ? (
                 <ItemList
                   activeTab={activeTabMeta}
                   authUser={authUser}
@@ -447,7 +451,11 @@ function App() {
       {activeConnection ? (
         <button
           className="fixed bottom-5 right-5 grid h-14 w-14 place-items-center rounded-2xl bg-gray-950 text-3xl leading-none text-white shadow-md transition hover:-translate-y-0.5 hover:bg-gray-800 focus:outline-none focus:ring-4 focus:ring-pink-200"
-          onClick={() => setIsAddModalOpen(true)}
+          onClick={() => {
+            setAddMode('');
+            setDate('');
+            setIsAddModalOpen(true);
+          }}
           type="button"
         >
           +
@@ -456,12 +464,17 @@ function App() {
 
       {isAddModalOpen ? (
         <AddItemModal
+          addMode={addMode}
           activeTab={activeTabMeta}
           category={category}
           date={date}
           notes={notes}
           onCategoryChange={setCategory}
-          onClose={() => setIsAddModalOpen(false)}
+          onChooseMode={setAddMode}
+          onClose={() => {
+            setAddMode('');
+            setIsAddModalOpen(false);
+          }}
           onDateChange={setDate}
           onNotesChange={setNotes}
           onSubmit={addItem}
@@ -469,6 +482,25 @@ function App() {
           title={title}
         />
       ) : null}
+
+      {isFriendsOpen ? (
+        <FriendsModal
+          activeConnectionId={activeConnectionId}
+          connections={connections}
+          onAddConnection={() => {
+            setIsFriendsOpen(false);
+            setIsConnectOpen(true);
+          }}
+          onClose={() => setIsFriendsOpen(false)}
+          onSwitch={async (connectionId) => {
+            await switchConnection(connectionId);
+            setIsFriendsOpen(false);
+          }}
+        />
+      ) : null}
+
+      {isTourOpen ? <TourModal onClose={() => setIsTourOpen(false)} /> : null}
+      {isPrivacyOpen ? <PrivacyPolicyModal onClose={() => setIsPrivacyOpen(false)} /> : null}
 
       {toast ? <Toast message={toast} /> : null}
     </main>
@@ -524,6 +556,16 @@ function formatReadableDate(dateString) {
   });
 }
 
+function formatDateTime(dateString) {
+  if (!dateString) return 'Not used yet';
+
+  return new Date(dateString).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  });
+}
+
 function getCalendarDays(month) {
   const firstDay = startOfMonth(month);
   const startDate = new Date(firstDay);
@@ -540,39 +582,78 @@ function LoadingScreen() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#f7f3ef] px-4 text-gray-950">
       <div className="rounded-2xl bg-white p-5 shadow-sm">
-        <p className="text-sm font-medium text-gray-600">Loading Couple Wishlist...</p>
+        <p className="text-sm font-medium text-gray-600">Loading CONNECTED...</p>
       </div>
     </main>
   );
 }
 
-function TopNav({ activeConnection, authUser, connections, onAddConnection, onSignOut, onSwitchConnection, profile }) {
+function TopNav({
+  activeConnection,
+  authUser,
+  connections,
+  onAddConnection,
+  onOpenFriends,
+  onOpenPrivacy,
+  onReplayTour,
+  onSignOut,
+  onSwitchConnection,
+  profile
+}) {
   const avatarUrl = authUser.photoURL;
   const name = profile?.name || authUser.displayName || 'You';
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    function handlePointerDown(event) {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setIsMenuOpen(false);
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, []);
+
+  function handleMenuAction(action) {
+    setIsMenuOpen(false);
+    action();
+  }
 
   return (
     <nav className="sticky top-0 z-20 border-b border-black/5 bg-[#f7f3ef]/90 backdrop-blur">
       <div className="mx-auto flex max-w-3xl flex-col gap-3 px-4 py-3 sm:px-6">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <p className="text-xl font-semibold tracking-tight">Couple Wishlist</p>
-            <p className="text-sm text-gray-600">Shared plans, one cozy list</p>
+            <p className="text-xl font-semibold tracking-tight">CONNECTED</p>
+            <p className="text-sm text-gray-600">Shared plans, one simple place</p>
           </div>
-          <div className="flex items-center gap-3">
-            {avatarUrl ? (
-              <img alt={name} className="h-10 w-10 rounded-full object-cover ring-2 ring-white" src={avatarUrl} />
-            ) : (
-              <div className="grid h-10 w-10 place-items-center rounded-full bg-pink-100 text-sm font-semibold text-pink-700">
-                {name.charAt(0)}
-              </div>
-            )}
+          <div className="relative" ref={menuRef}>
             <button
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 shadow-sm transition hover:border-gray-300 hover:bg-gray-50"
-              onClick={onSignOut}
+              className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-2 py-2 text-sm font-semibold text-gray-700 shadow-sm transition hover:border-gray-300 hover:bg-gray-50"
+              onClick={() => setIsMenuOpen((isOpen) => !isOpen)}
               type="button"
             >
-              Logout
+              {avatarUrl ? (
+                <img alt={name} className="h-9 w-9 rounded-full object-cover ring-2 ring-white" src={avatarUrl} />
+              ) : (
+                <span className="grid h-9 w-9 place-items-center rounded-full bg-pink-100 text-sm font-semibold text-pink-700">
+                  {name.charAt(0)}
+                </span>
+              )}
+              <span className="hidden max-w-28 truncate sm:block">{firstName(name)}</span>
+              <span className="px-1 text-gray-400">{isMenuOpen ? 'Up' : 'Down'}</span>
             </button>
+            {isMenuOpen ? (
+              <div className="absolute right-0 mt-2 w-56 overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-md ring-1 ring-black/5">
+                <MenuButton label="Friends List" onClick={() => handleMenuAction(onOpenFriends)} />
+                <MenuButton label="Replay Tour" onClick={() => handleMenuAction(onReplayTour)} />
+                <MenuButton label="Privacy Policy" onClick={() => handleMenuAction(onOpenPrivacy)} />
+                <div className="border-t border-gray-100" />
+                <MenuButton label="Logout" onClick={() => handleMenuAction(onSignOut)} tone="danger" />
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -601,6 +682,20 @@ function TopNav({ activeConnection, authUser, connections, onAddConnection, onSi
         </div>
       </div>
     </nav>
+  );
+}
+
+function MenuButton({ label, onClick, tone = 'default' }) {
+  return (
+    <button
+      className={`block w-full px-4 py-3 text-left text-sm font-semibold transition ${
+        tone === 'danger' ? 'text-red-600 hover:bg-red-50' : 'text-gray-700 hover:bg-gray-50'
+      }`}
+      onClick={onClick}
+      type="button"
+    >
+      {label}
+    </button>
   );
 }
 
@@ -954,11 +1049,13 @@ function EmptyState({ activeTab }) {
 }
 
 function AddItemModal({
+  addMode,
   activeTab,
   category,
   date,
   notes,
   onCategoryChange,
+  onChooseMode,
   onClose,
   onDateChange,
   onNotesChange,
@@ -967,6 +1064,7 @@ function AddItemModal({
   title
 }) {
   const tab = activeTab || tabs[0];
+  const modeLabel = addMode === 'scheduled' ? 'scheduled' : tab.label.toLowerCase();
 
   return (
     <div className="fixed inset-0 z-30 flex items-center justify-center bg-gray-950/40 px-4 backdrop-blur-sm">
@@ -975,7 +1073,7 @@ function AddItemModal({
           <div>
             <h2 className="text-xl font-semibold">Add Item</h2>
             <p className="mt-1 text-sm text-gray-600">
-              Choose a date to schedule it, or leave it blank for the wishlist.
+              Choose where this item belongs, then add the details.
             </p>
           </div>
           <button
@@ -987,14 +1085,34 @@ function AddItemModal({
           </button>
         </div>
 
-        <form className="mt-5 grid gap-4" onSubmit={onSubmit}>
+        {!addMode ? (
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            <button
+              className="rounded-2xl border border-pink-100 bg-pink-50 p-4 text-left transition hover:-translate-y-0.5 hover:bg-pink-100"
+              onClick={() => onChooseMode('wishlist')}
+              type="button"
+            >
+              <span className="text-sm font-semibold text-pink-700">Add to Wishlist</span>
+              <span className="mt-1 block text-sm text-gray-600">Save an idea without picking a date.</span>
+            </button>
+            <button
+              className="rounded-2xl border border-blue-100 bg-blue-50 p-4 text-left transition hover:-translate-y-0.5 hover:bg-blue-100"
+              onClick={() => onChooseMode('scheduled')}
+              type="button"
+            >
+              <span className="text-sm font-semibold text-blue-700">Schedule Item</span>
+              <span className="mt-1 block text-sm text-gray-600">Add it directly to the calendar.</span>
+            </button>
+          </div>
+        ) : (
+          <form className="mt-5 grid gap-4" onSubmit={onSubmit}>
           <label className="grid gap-2">
             <span className="text-sm font-semibold text-gray-700">Title</span>
             <input
               autoFocus
               className="rounded-xl border border-gray-200 px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
               onChange={(event) => onTitleChange(event.target.value)}
-              placeholder={`Add ${tab.label.toLowerCase()} item`}
+              placeholder={`Add ${modeLabel} item`}
               required
               value={title}
             />
@@ -1017,15 +1135,18 @@ function AddItemModal({
             </select>
           </label>
 
-          <label className="grid gap-2">
-            <span className="text-sm font-semibold text-gray-700">Date</span>
-            <input
-              className="rounded-xl border border-gray-200 px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
-              onChange={(event) => onDateChange(event.target.value)}
-              type="date"
-              value={date}
-            />
-          </label>
+          {addMode === 'scheduled' ? (
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold text-gray-700">Date</span>
+              <input
+                className="rounded-xl border border-gray-200 px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+                onChange={(event) => onDateChange(event.target.value)}
+                required
+                type="date"
+                value={date}
+              />
+            </label>
+          ) : null}
 
           <label className="grid gap-2">
             <span className="text-sm font-semibold text-gray-700">Notes</span>
@@ -1037,12 +1158,19 @@ function AddItemModal({
             />
           </label>
 
-          <div className="flex gap-2 pt-1">
+          <div className="flex flex-col gap-2 pt-1 sm:flex-row">
             <button
               className="flex-1 rounded-xl bg-gray-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-gray-800"
               type="submit"
             >
-              Add Item
+              {addMode === 'scheduled' ? 'Schedule Item' : 'Add to Wishlist'}
+            </button>
+            <button
+              className="rounded-xl border border-gray-200 px-4 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+              onClick={() => onChooseMode('')}
+              type="button"
+            >
+              Back
             </button>
             <button
               className="rounded-xl border border-gray-200 px-4 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
@@ -1053,8 +1181,135 @@ function AddItemModal({
             </button>
           </div>
         </form>
+        )}
       </section>
     </div>
+  );
+}
+
+function ModalShell({ children, onClose, title }) {
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-gray-950/40 px-4 backdrop-blur-sm">
+      <section className="max-h-[85vh] w-full max-w-lg overflow-auto rounded-2xl bg-white p-5 shadow-md">
+        <div className="flex items-start justify-between gap-4">
+          <h2 className="text-xl font-semibold">{title}</h2>
+          <button
+            className="rounded-xl border border-gray-200 px-3 py-1 text-sm font-semibold text-gray-600 hover:bg-gray-50"
+            onClick={onClose}
+            type="button"
+          >
+            Close
+          </button>
+        </div>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function FriendsModal({ activeConnectionId, connections, onAddConnection, onClose, onSwitch }) {
+  return (
+    <ModalShell onClose={onClose} title="Friends List">
+      {connections.length === 0 ? (
+        <div className="mt-5 rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-5 py-8 text-center">
+          <p className="text-sm text-gray-600">No friends connected yet. Add someone using an invite code.</p>
+          <button
+            className="mt-4 rounded-xl bg-pink-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-pink-700"
+            onClick={onAddConnection}
+            type="button"
+          >
+            Add new connection
+          </button>
+        </div>
+      ) : (
+        <div className="mt-5 grid gap-3">
+          {connections.map((connection) => {
+            const isActive = connection.connectionId === activeConnectionId;
+
+            return (
+              <article
+                className={`rounded-2xl border p-4 transition ${
+                  isActive ? 'border-pink-200 bg-pink-50' : 'border-gray-100 bg-white hover:bg-gray-50'
+                }`}
+                key={connection.connectionId}
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold text-gray-950">{connection.partnerName}</h3>
+                      {isActive ? (
+                        <span className="rounded-full bg-gray-950 px-2 py-1 text-xs font-semibold text-white">Active</span>
+                      ) : null}
+                    </div>
+                    <p className="mt-1 text-sm text-gray-600">
+                      Last used {formatDateTime(connection.lastUsedAt || connection.lastActiveAt)}
+                    </p>
+                  </div>
+                  <button
+                    className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                      isActive
+                        ? 'border border-pink-200 bg-white text-pink-700'
+                        : 'bg-gray-950 text-white hover:bg-gray-800'
+                    }`}
+                    disabled={isActive}
+                    onClick={() => onSwitch(connection.connectionId)}
+                    type="button"
+                  >
+                    {isActive ? 'Current' : 'Switch'}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </ModalShell>
+  );
+}
+
+function TourModal({ onClose }) {
+  return (
+    <ModalShell onClose={onClose} title="Welcome to CONNECTED">
+      <div className="mt-5 grid gap-3">
+        {[
+          ['Connect', 'Share your invite code or enter someone else’s code to create a shared space.'],
+          ['Plan', 'Add ideas to Wishlist, or schedule plans with a date.'],
+          ['Switch', 'Use Friends List to move between different people without re-entering codes.']
+        ].map(([heading, text]) => (
+          <div className="rounded-2xl bg-gray-50 p-4" key={heading}>
+            <p className="font-semibold text-gray-950">{heading}</p>
+            <p className="mt-1 text-sm text-gray-600">{text}</p>
+          </div>
+        ))}
+      </div>
+      <button
+        className="mt-5 w-full rounded-xl bg-gray-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-gray-800"
+        onClick={onClose}
+        type="button"
+      >
+        Got it
+      </button>
+    </ModalShell>
+  );
+}
+
+function PrivacyPolicyModal({ onClose }) {
+  return (
+    <ModalShell onClose={onClose} title="Privacy Policy">
+      <div className="mt-5 grid gap-4 text-sm text-gray-600">
+        <p>
+          CONNECTED uses Firebase Authentication to sign you in and Firestore to store your profile, connections, and
+          shared items.
+        </p>
+        <p>
+          Your wishlist and scheduled items are only requested by the app for the active connection you select. The app
+          does not sell personal data or include ads.
+        </p>
+        <p>
+          Avoid adding sensitive information to item titles or notes. You can remove items from the app at any time.
+        </p>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -1070,7 +1325,7 @@ function FirebaseSetupPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#f7f3ef] px-4 text-gray-950">
       <section className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-        <p className="text-sm font-semibold uppercase tracking-wide text-pink-600">Couple Wishlist</p>
+        <p className="text-sm font-semibold uppercase tracking-wide text-pink-600">CONNECTED</p>
         <h1 className="mt-2 text-xl font-semibold">Firebase config needed</h1>
         <p className="mt-3 text-sm text-gray-600">
           Add your Firebase values to a root <span className="font-mono">.env</span> file, then restart Docker.
@@ -1089,7 +1344,7 @@ function LoginPage({ message, onLogin }) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#f7f3ef] px-4 text-gray-950">
       <section className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm">
-        <p className="text-sm font-semibold uppercase tracking-wide text-pink-600">Couple Wishlist</p>
+        <p className="text-sm font-semibold uppercase tracking-wide text-pink-600">CONNECTED</p>
         <h1 className="mt-2 text-xl font-semibold">Sign in to continue</h1>
         <p className="mt-2 text-sm text-gray-600">Use Google to keep your shared wishlist connected.</p>
         <button
