@@ -83,6 +83,8 @@ function App() {
   const [isTourOpen, setIsTourOpen] = useState(false);
   const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
   const [isToBuyModalOpen, setIsToBuyModalOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState('');
+  const pendingActionRef = useRef('');
 
   const activeTabMeta = tabs.find((tab) => tab.id === activeTab);
   const activeConnection = connections.find((connection) => connection.connectionId === activeConnectionId);
@@ -97,6 +99,19 @@ function App() {
   const visibleToBuyItems = toBuyItems
     .filter((item) => toBuyStatusFilter === 'all' || item.status === toBuyStatusFilter)
     .filter((item) => toBuyCategoryFilter === 'All' || item.category === toBuyCategoryFilter);
+
+  function startPendingAction(action) {
+    if (pendingActionRef.current) return false;
+
+    pendingActionRef.current = action;
+    setPendingAction(action);
+    return true;
+  }
+
+  function finishPendingAction() {
+    pendingActionRef.current = '';
+    setPendingAction('');
+  }
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -322,28 +337,33 @@ function App() {
     event.preventDefault();
 
     if (!feelingText.trim() || !activeConnectionId) return;
+    if (!startPendingAction('share-feeling')) return;
 
-    const response = await fetch(apiPath('/api/feelings'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(await getAuthHeaders())
-      },
-      body: JSON.stringify({
-        connectionId: activeConnectionId,
-        text: feelingText
-      })
-    });
+    try {
+      const response = await fetch(apiPath('/api/feelings'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(await getAuthHeaders())
+        },
+        body: JSON.stringify({
+          connectionId: activeConnectionId,
+          text: feelingText
+        })
+      });
 
-    if (!response.ok) {
-      setMessage('Could not share feeling.');
-      return;
+      if (!response.ok) {
+        setMessage('Could not share feeling.');
+        return;
+      }
+
+      setFeelingText('');
+      setMessage('');
+      setToast('Feeling shared');
+      await loadFeelings();
+    } finally {
+      finishPendingAction();
     }
-
-    setFeelingText('');
-    setMessage('');
-    setToast('Feeling shared');
-    await loadFeelings();
   }
 
   async function deleteFeeling(feelingId) {
@@ -394,30 +414,35 @@ function App() {
   async function saveToBuyItem(event) {
     event.preventDefault();
     if (!toBuyDraft.title.trim() || !activeConnectionId) return;
+    if (!startPendingAction('save-to-buy')) return;
 
     const path = editingToBuyItem ? `/api/to-buy/${editingToBuyItem.id}` : '/api/to-buy';
-    const response = await fetch(apiPath(path), {
-      method: editingToBuyItem ? 'PATCH' : 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(await getAuthHeaders())
-      },
-      body: JSON.stringify({
-        ...toBuyDraft,
-        connectionId: activeConnectionId,
-        amount: toBuyDraft.amount === '' ? null : Number(toBuyDraft.amount),
-        purchaseIntentDate: toBuyDraft.purchaseIntentDate || null
-      })
-    });
+    try {
+      const response = await fetch(apiPath(path), {
+        method: editingToBuyItem ? 'PATCH' : 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(await getAuthHeaders())
+        },
+        body: JSON.stringify({
+          ...toBuyDraft,
+          connectionId: activeConnectionId,
+          amount: toBuyDraft.amount === '' ? null : Number(toBuyDraft.amount),
+          purchaseIntentDate: toBuyDraft.purchaseIntentDate || null
+        })
+      });
 
-    if (!response.ok) {
-      setMessage('Could not save to-buy item.');
-      return;
+      if (!response.ok) {
+        setMessage('Could not save to-buy item.');
+        return;
+      }
+
+      closeToBuyModal();
+      setToast(editingToBuyItem ? 'Item updated' : 'Item added');
+      await loadToBuyItems();
+    } finally {
+      finishPendingAction();
     }
-
-    closeToBuyModal();
-    setToast(editingToBuyItem ? 'Item updated' : 'Item added');
-    await loadToBuyItems();
   }
 
   async function updateToBuyStatus(item, status) {
@@ -459,29 +484,35 @@ function App() {
   }
 
   async function sendToBuyOpinion(itemId) {
+    const actionKey = `opinion-${itemId}`;
     const opinion = opinionDrafts[itemId] || '';
     if (!opinion.trim()) return;
+    if (!startPendingAction(actionKey)) return;
 
-    const response = await fetch(apiPath(`/api/to-buy/${itemId}/opinion`), {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(await getAuthHeaders())
-      },
-      body: JSON.stringify({
-        connectionId: activeConnectionId,
-        partnerOpinion: opinion
-      })
-    });
+    try {
+      const response = await fetch(apiPath(`/api/to-buy/${itemId}/opinion`), {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(await getAuthHeaders())
+        },
+        body: JSON.stringify({
+          connectionId: activeConnectionId,
+          partnerOpinion: opinion
+        })
+      });
 
-    if (!response.ok) {
-      setMessage('Could not send opinion.');
-      return;
+      if (!response.ok) {
+        setMessage('Could not send opinion.');
+        return;
+      }
+
+      setOpinionDrafts((drafts) => ({ ...drafts, [itemId]: '' }));
+      setToast('Opinion sent');
+      await loadToBuyItems();
+    } finally {
+      finishPendingAction();
     }
-
-    setOpinionDrafts((drafts) => ({ ...drafts, [itemId]: '' }));
-    setToast('Opinion sent');
-    await loadToBuyItems();
   }
 
   async function addItem(event) {
@@ -489,37 +520,42 @@ function App() {
 
     if (!title.trim() || !activeConnectionId) return;
     if (addMode === 'scheduled' && !date) return;
+    if (!startPendingAction('add-item')) return;
 
-    const response = await fetch(apiPath('/api/items'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(await getAuthHeaders())
-      },
-      body: JSON.stringify({
-        connectionId: activeConnectionId,
-        category,
-        title,
-        notes,
-        status: addMode === 'scheduled' ? 'scheduled' : 'wishlist',
-        date: addMode === 'scheduled' ? date : null
-      })
-    });
+    try {
+      const response = await fetch(apiPath('/api/items'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(await getAuthHeaders())
+        },
+        body: JSON.stringify({
+          connectionId: activeConnectionId,
+          category,
+          title,
+          notes,
+          status: addMode === 'scheduled' ? 'scheduled' : 'wishlist',
+          date: addMode === 'scheduled' ? date : null
+        })
+      });
 
-    if (!response.ok) {
-      setMessage('Could not add item.');
-      return;
+      if (!response.ok) {
+        setMessage('Could not add item.');
+        return;
+      }
+
+      setTitle('');
+      setNotes('');
+      setDate('');
+      setCategory('movie');
+      setAddMode('');
+      setMessage('');
+      setIsAddModalOpen(false);
+      setToast('Item added');
+      await loadItems();
+    } finally {
+      finishPendingAction();
     }
-
-    setTitle('');
-    setNotes('');
-    setDate('');
-    setCategory('movie');
-    setAddMode('');
-    setMessage('');
-    setIsAddModalOpen(false);
-    setToast('Item added');
-    await loadItems();
   }
 
   async function markDone(itemId) {
@@ -581,31 +617,37 @@ function App() {
 
   async function connectPartner(event) {
     event.preventDefault();
+    if (!inviteCode.trim()) return;
+    if (!startPendingAction('connect')) return;
 
-    const response = await fetch(apiPath('/api/connect'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(await getAuthHeaders())
-      },
-      body: JSON.stringify({ code: inviteCode })
-    });
+    try {
+      const response = await fetch(apiPath('/api/connect'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(await getAuthHeaders())
+        },
+        body: JSON.stringify({ code: inviteCode })
+      });
 
-    const result = await response.json();
+      const result = await response.json();
 
-    if (!response.ok) {
-      setMessage(result.message || 'Could not connect.');
-      return;
+      if (!response.ok) {
+        setMessage(result.message || 'Could not connect.');
+        return;
+      }
+
+      const nextConnectionId = result.connection.connectionId;
+      setInviteCode('');
+      setMessage('');
+      setToast('Connection added');
+      setIsConnectOpen(false);
+      const nextConnections = await loadConnections();
+      chooseActiveConnection(nextConnections, nextConnectionId);
+      await loadConnectionData(nextConnectionId);
+    } finally {
+      finishPendingAction();
     }
-
-    const nextConnectionId = result.connection.connectionId;
-    setInviteCode('');
-    setMessage('');
-    setToast('Connection added');
-    setIsConnectOpen(false);
-    const nextConnections = await loadConnections();
-    chooseActiveConnection(nextConnections, nextConnectionId);
-    await loadConnectionData(nextConnectionId);
   }
 
   if (loading) return <LoadingScreen />;
@@ -663,6 +705,7 @@ function App() {
                   onSendOpinion={sendToBuyOpinion}
                   onStatusChange={updateToBuyStatus}
                   opinionDrafts={opinionDrafts}
+                  pendingAction={pendingAction}
                   statusFilter={toBuyStatusFilter}
                   onStatusFilterChange={setToBuyStatusFilter}
                 />
@@ -672,6 +715,7 @@ function App() {
                   connection={activeConnection}
                   feelingText={feelingText}
                   feelings={feelings}
+                  isSubmitting={pendingAction === 'share-feeling'}
                   onDelete={deleteFeeling}
                   onFeelingTextChange={setFeelingText}
                   onSubmit={shareFeeling}
@@ -735,6 +779,7 @@ function App() {
           onDateChange={setDate}
           onNotesChange={setNotes}
           onSubmit={addItem}
+          isSubmitting={pendingAction === 'add-item'}
           onTitleChange={setTitle}
           title={title}
         />
@@ -746,6 +791,7 @@ function App() {
           connection={activeConnection}
           draft={toBuyDraft}
           isEditing={Boolean(editingToBuyItem)}
+          isSubmitting={pendingAction === 'save-to-buy'}
           onChange={(field, value) => setToBuyDraft((draft) => ({ ...draft, [field]: value }))}
           onClose={closeToBuyModal}
           onSubmit={saveToBuyItem}
@@ -756,6 +802,7 @@ function App() {
         <ConnectionPanel
           inviteCode={inviteCode}
           message={message}
+          isSubmitting={pendingAction === 'connect'}
           onClose={() => setIsConnectOpen(false)}
           onConnect={connectPartner}
           onInviteCodeChange={setInviteCode}
@@ -902,6 +949,24 @@ function LoadingScreen() {
         <p className="text-sm font-medium text-gray-600">Loading CONNECTED...</p>
       </div>
     </main>
+  );
+}
+
+function Spinner() {
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
+    />
+  );
+}
+
+function ButtonContent({ isLoading, children, loadingText = 'Saving...' }) {
+  return (
+    <span className="inline-flex items-center justify-center gap-2">
+      {isLoading ? <Spinner /> : null}
+      {isLoading ? loadingText : children}
+    </span>
   );
 }
 
@@ -1084,7 +1149,7 @@ function ViewToggle({ onChange, viewMode }) {
   );
 }
 
-function ConnectionPanel({ inviteCode, message, onClose, onConnect, onInviteCodeChange, userCode }) {
+function ConnectionPanel({ inviteCode, isSubmitting, message, onClose, onConnect, onInviteCodeChange, userCode }) {
   const [copyStatus, setCopyStatus] = useState('');
 
   async function copyInviteCode() {
@@ -1149,10 +1214,13 @@ function ConnectionPanel({ inviteCode, message, onClose, onConnect, onInviteCode
             />
           </label>
           <button
-            className="rounded-xl bg-pink-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-pink-700"
+            className="rounded-xl bg-pink-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-pink-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+            disabled={isSubmitting || !inviteCode.trim()}
             type="submit"
           >
-            Connect
+            <ButtonContent isLoading={isSubmitting} loadingText="Connecting...">
+              Connect
+            </ButtonContent>
           </button>
           <button
             className="rounded-xl border border-gray-200 px-4 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
@@ -1198,6 +1266,7 @@ function ToBuyView({
   onSendOpinion,
   onStatusChange,
   opinionDrafts,
+  pendingAction,
   statusFilter,
   onStatusFilterChange
 }) {
@@ -1268,6 +1337,7 @@ function ToBuyView({
               onSendOpinion={onSendOpinion}
               onStatusChange={onStatusChange}
               opinionValue={opinionDrafts[item.id] ?? item.partnerOpinion ?? ''}
+              pendingAction={pendingAction}
             />
           ))}
         </div>
@@ -1285,11 +1355,13 @@ function ToBuyCard({
   onOpinionChange,
   onSendOpinion,
   onStatusChange,
-  opinionValue
+  opinionValue,
+  pendingAction
 }) {
   const isCreator = item.addedByUserId === authUser.uid;
   const addedBy = isCreator ? 'You' : connection?.partnerName || 'Partner';
   const opinionBy = item.partnerOpinionByUserId === authUser.uid ? 'You' : connection?.partnerName || 'Partner';
+  const isSendingOpinion = pendingAction === `opinion-${item.id}`;
 
   return (
     <article className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
@@ -1342,11 +1414,14 @@ function ToBuyCard({
               value={opinionValue}
             />
             <button
-              className="justify-self-start rounded-xl bg-pink-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-pink-700"
+              className="justify-self-start rounded-xl bg-pink-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-pink-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+              disabled={isSendingOpinion || !opinionValue.trim()}
               onClick={() => onSendOpinion(item.id)}
               type="button"
             >
-              Send Opinion
+              <ButtonContent isLoading={isSendingOpinion} loadingText="Sending...">
+                Send Opinion
+              </ButtonContent>
             </button>
           </div>
         )}
@@ -1409,7 +1484,7 @@ function priorityTone(priority) {
   }[priority] || 'gray';
 }
 
-function FeelingsView({ authUser, connection, feelingText, feelings, onDelete, onFeelingTextChange, onSubmit }) {
+function FeelingsView({ authUser, connection, feelingText, feelings, isSubmitting, onDelete, onFeelingTextChange, onSubmit }) {
   return (
     <div className="mt-4 grid gap-4">
       <form className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5" onSubmit={onSubmit}>
@@ -1425,10 +1500,12 @@ function FeelingsView({ authUser, connection, feelingText, feelings, onDelete, o
         <div className="mt-3 flex justify-end">
           <button
             className="rounded-xl bg-pink-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-pink-700 disabled:cursor-not-allowed disabled:bg-gray-300"
-            disabled={!feelingText.trim()}
+            disabled={isSubmitting || !feelingText.trim()}
             type="submit"
           >
-            Share
+            <ButtonContent isLoading={isSubmitting} loadingText="Sharing...">
+              Share
+            </ButtonContent>
           </button>
         </div>
       </form>
@@ -1717,6 +1794,7 @@ function AddItemModal({
   onDateChange,
   onNotesChange,
   onSubmit,
+  isSubmitting,
   onTitleChange,
   title
 }) {
@@ -1817,10 +1895,13 @@ function AddItemModal({
 
           <div className="flex flex-col gap-2 pt-1 sm:flex-row">
             <button
-              className="flex-1 rounded-xl bg-gray-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-gray-800"
+              className="flex-1 rounded-xl bg-gray-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
+              disabled={isSubmitting}
               type="submit"
             >
-              {addMode === 'scheduled' ? 'Schedule Item' : 'Add to Wishlist'}
+              <ButtonContent isLoading={isSubmitting} loadingText="Adding...">
+                {addMode === 'scheduled' ? 'Schedule Item' : 'Add to Wishlist'}
+              </ButtonContent>
             </button>
             <button
               className="rounded-xl border border-gray-200 px-4 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
@@ -1844,7 +1925,7 @@ function AddItemModal({
   );
 }
 
-function ToBuyModal({ authUser, connection, draft, isEditing, onChange, onClose, onSubmit }) {
+function ToBuyModal({ authUser, connection, draft, isEditing, isSubmitting, onChange, onClose, onSubmit }) {
   const forOptions = [
     { label: 'Me', value: authUser.uid },
     { label: 'Partner', value: connection?.partnerId || '' },
@@ -1982,10 +2063,13 @@ function ToBuyModal({ authUser, connection, draft, isEditing, onChange, onClose,
 
           <div className="flex flex-col gap-2 sm:flex-row">
             <button
-              className="flex-1 rounded-xl bg-gray-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-gray-800"
+              className="flex-1 rounded-xl bg-gray-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
+              disabled={isSubmitting}
               type="submit"
             >
-              {isEditing ? 'Save Changes' : 'Add Item'}
+              <ButtonContent isLoading={isSubmitting} loadingText="Saving...">
+                {isEditing ? 'Save Changes' : 'Add Item'}
+              </ButtonContent>
             </button>
             <button
               className="rounded-xl border border-gray-200 px-4 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
