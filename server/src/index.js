@@ -6,17 +6,25 @@ const app = express();
 const port = process.env.PORT || 5000;
 const validCategories = ['movie', 'restaurant', 'trip', 'hotel'];
 const validStatuses = ['wishlist', 'scheduled', 'done'];
+
+function normalizeOrigin(origin) {
+  return origin.trim().replace(/\/+$/, '');
+}
+
 const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173')
   .split(',')
-  .map((origin) => origin.trim())
+  .map(normalizeOrigin)
   .filter(Boolean);
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
+  const normalizedOrigin = origin ? normalizeOrigin(origin) : '';
 
-  if (origin && allowedOrigins.includes(origin)) {
+  if (origin && allowedOrigins.includes(normalizedOrigin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
+  } else if (origin) {
+    console.warn(`[cors] Blocked origin: ${origin}. Allowed origins: ${allowedOrigins.join(', ') || 'none'}`);
   }
 
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, user-id');
