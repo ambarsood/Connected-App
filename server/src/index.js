@@ -6,6 +6,9 @@ const app = express();
 const port = process.env.PORT || 5000;
 const validCategories = ['movie', 'restaurant', 'trip', 'hotel'];
 const validStatuses = ['wishlist', 'scheduled', 'done'];
+const toBuyCategories = ['Fashion', 'Electronics', 'Home', 'Travel', 'Gift', 'Personal', 'Other'];
+const toBuyStatuses = ['thinking', 'approved', 'bought', 'dropped'];
+const toBuyPriorities = ['low', 'medium', 'high'];
 
 function normalizeOrigin(origin) {
   return origin.trim().replace(/\/+$/, '');
@@ -154,6 +157,53 @@ function normalizeDate(date) {
 
   const nextDate = String(date).trim();
   return /^\d{4}-\d{2}-\d{2}$/.test(nextDate) ? nextDate : null;
+}
+
+function normalizeOptionalUrl(url) {
+  if (!url) return '';
+
+  const nextUrl = String(url).trim();
+  if (!nextUrl) return '';
+
+  try {
+    const parsedUrl = new URL(nextUrl);
+    return ['http:', 'https:'].includes(parsedUrl.protocol) ? parsedUrl.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizeAmount(amount) {
+  if (amount === null || amount === undefined || amount === '') return null;
+
+  const nextAmount = Number(amount);
+  return Number.isFinite(nextAmount) && nextAmount >= 0 ? nextAmount : null;
+}
+
+function normalizeToBuyPayload(body, user, userConnection, existingItem = {}) {
+  const forUserId = body.forUserId || existingItem.forUserId || 'both';
+  const allowedForUserIds = [user.id, userConnection.partnerId, 'both'].filter(Boolean);
+
+  return {
+    title: Object.prototype.hasOwnProperty.call(body, 'title') ? String(body.title || '').trim() : existingItem.title,
+    description: Object.prototype.hasOwnProperty.call(body, 'description')
+      ? String(body.description || '').trim()
+      : existingItem.description || '',
+    amount: Object.prototype.hasOwnProperty.call(body, 'amount') ? normalizeAmount(body.amount) : existingItem.amount ?? null,
+    productLink: Object.prototype.hasOwnProperty.call(body, 'productLink')
+      ? normalizeOptionalUrl(body.productLink)
+      : existingItem.productLink || '',
+    category: toBuyCategories.includes(body.category) ? body.category : existingItem.category || 'Other',
+    forUserId: allowedForUserIds.includes(forUserId) ? forUserId : 'both',
+    purchaseIntentDate: Object.prototype.hasOwnProperty.call(body, 'purchaseIntentDate')
+      ? normalizeDate(body.purchaseIntentDate)
+      : existingItem.purchaseIntentDate || null,
+    status: toBuyStatuses.includes(body.status) ? body.status : existingItem.status || 'thinking',
+    priority: toBuyPriorities.includes(body.priority) ? body.priority : existingItem.priority || 'medium',
+    opinionQuestion: Object.prototype.hasOwnProperty.call(body, 'opinionQuestion')
+      ? String(body.opinionQuestion || '').trim()
+      : existingItem.opinionQuestion || ''
+  };
 }
 
 function normalizeCategory(category, type) {
@@ -482,6 +532,217 @@ app.get('/api/items/calendar', asyncHandler(async (req, res) => {
     .sort((a, b) => new Date(a.date || a.createdAt) - new Date(b.date || b.createdAt));
 
   res.json(groupItemsByDate(visibleItems));
+}));
+
+app.get('/api/feelings', asyncHandler(async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const connectionId = getConnectionId(req);
+  const userConnection = await requireConnection(user.id, connectionId, res);
+  if (!userConnection) return;
+
+  const snapshot = await db.collection('feelings').where('connectionId', '==', connectionId).get();
+  const feelings = snapshot.docs
+    .map((feelingDoc) => ({ id: feelingDoc.id, ...feelingDoc.data() }))
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  res.json(feelings);
+}));
+
+app.post('/api/feelings', asyncHandler(async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const { connectionId, text } = req.body;
+  const userConnection = await requireConnection(user.id, connectionId, res);
+  if (!userConnection) return;
+  const nextText = String(text || '').trim();
+
+  if (!nextText) {
+    return res.status(400).json({ message: 'Feeling text is required' });
+  }
+
+  const now = new Date().toISOString();
+  const feeling = {
+    connectionId,
+    userId: user.id,
+    text: nextText,
+    createdAt: now
+  };
+
+  const feelingRef = await db.collection('feelings').add(feeling);
+  await db.collection('connections').doc(connectionId).update({ lastActiveAt: now });
+
+  res.status(201).json({ id: feelingRef.id, ...feeling });
+}));
+
+app.delete('/api/feelings/:id', asyncHandler(async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const connectionId = getConnectionId(req);
+  const userConnection = await requireConnection(user.id, connectionId, res);
+  if (!userConnection) return;
+
+  const feelingRef = db.collection('feelings').doc(req.params.id);
+  const feelingSnapshot = await feelingRef.get();
+  const feeling = feelingSnapshot.data();
+
+  if (!feelingSnapshot.exists || feeling.connectionId !== connectionId) {
+    return res.status(404).json({ message: 'Feeling not found' });
+  }
+
+  if (feeling.userId !== user.id) {
+    return res.status(403).json({ message: 'You can only delete your own feeling' });
+  }
+
+  await feelingRef.delete();
+  res.status(204).send();
+}));
+
+app.get('/api/to-buy', asyncHandler(async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const connectionId = getConnectionId(req);
+  const userConnection = await requireConnection(user.id, connectionId, res);
+  if (!userConnection) return;
+
+  const snapshot = await db.collection('to_buy_items').where('connectionId', '==', connectionId).get();
+  const items = snapshot.docs
+    .map((itemDoc) => ({ id: itemDoc.id, ...itemDoc.data() }))
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  res.json(items);
+}));
+
+app.post('/api/to-buy', asyncHandler(async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const { connectionId } = req.body;
+  const userConnection = await requireConnection(user.id, connectionId, res);
+  if (!userConnection) return;
+  const payload = normalizeToBuyPayload(
+    {
+      ...req.body,
+      status: 'thinking',
+      priority: req.body.priority || 'medium'
+    },
+    user,
+    userConnection
+  );
+
+  if (!payload.title) {
+    return res.status(400).json({ message: 'Title is required' });
+  }
+
+  const now = new Date().toISOString();
+  const item = {
+    connectionId,
+    ...payload,
+    currency: 'INR',
+    addedByUserId: user.id,
+    partnerOpinion: '',
+    partnerOpinionByUserId: null,
+    partnerOpinionUpdatedAt: null,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  const itemRef = await db.collection('to_buy_items').add(item);
+  await db.collection('connections').doc(connectionId).update({ lastActiveAt: now });
+
+  res.status(201).json({ id: itemRef.id, ...item });
+}));
+
+app.patch('/api/to-buy/:id', asyncHandler(async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const connectionId = getConnectionId(req);
+  const userConnection = await requireConnection(user.id, connectionId, res);
+  if (!userConnection) return;
+
+  const itemRef = db.collection('to_buy_items').doc(req.params.id);
+  const itemSnapshot = await itemRef.get();
+  const item = itemSnapshot.data();
+
+  if (!itemSnapshot.exists || item.connectionId !== connectionId) {
+    return res.status(404).json({ message: 'To-buy item not found' });
+  }
+
+  const updates = normalizeToBuyPayload(req.body, user, userConnection, item);
+
+  if (!updates.title) {
+    return res.status(400).json({ message: 'Title is required' });
+  }
+
+  updates.updatedAt = new Date().toISOString();
+  await itemRef.update(updates);
+
+  res.json({ id: itemSnapshot.id, ...item, ...updates });
+}));
+
+app.patch('/api/to-buy/:id/opinion', asyncHandler(async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const connectionId = getConnectionId(req);
+  const userConnection = await requireConnection(user.id, connectionId, res);
+  if (!userConnection) return;
+
+  const itemRef = db.collection('to_buy_items').doc(req.params.id);
+  const itemSnapshot = await itemRef.get();
+  const item = itemSnapshot.data();
+
+  if (!itemSnapshot.exists || item.connectionId !== connectionId) {
+    return res.status(404).json({ message: 'To-buy item not found' });
+  }
+
+  if (item.addedByUserId === user.id) {
+    return res.status(403).json({ message: 'Partner opinion must be added by the other user' });
+  }
+
+  const partnerOpinion = String(req.body.partnerOpinion || '').trim();
+  if (!partnerOpinion) {
+    return res.status(400).json({ message: 'Opinion is required' });
+  }
+
+  const updates = {
+    partnerOpinion,
+    partnerOpinionByUserId: user.id,
+    partnerOpinionUpdatedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  await itemRef.update(updates);
+  res.json({ id: itemSnapshot.id, ...item, ...updates });
+}));
+
+app.delete('/api/to-buy/:id', asyncHandler(async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const connectionId = getConnectionId(req);
+  const userConnection = await requireConnection(user.id, connectionId, res);
+  if (!userConnection) return;
+
+  const itemRef = db.collection('to_buy_items').doc(req.params.id);
+  const itemSnapshot = await itemRef.get();
+  const item = itemSnapshot.data();
+
+  if (!itemSnapshot.exists || item.connectionId !== connectionId) {
+    return res.status(404).json({ message: 'To-buy item not found' });
+  }
+
+  if (item.addedByUserId !== user.id) {
+    return res.status(403).json({ message: 'Only the creator can delete this item' });
+  }
+
+  await itemRef.delete();
+  res.status(204).send();
 }));
 
 app.post('/api/items', asyncHandler(async (req, res) => {

@@ -4,7 +4,9 @@ import { auth, firebaseReady, googleProvider } from './firebase.js';
 
 const tabs = [
   { id: 'wishlist', label: 'Wishlist', emptyTitle: 'Nothing on the wishlist yet', emptyIcon: '✨' },
-  { id: 'scheduled', label: 'Scheduled', emptyTitle: 'Nothing scheduled yet', emptyIcon: '📅' }
+  { id: 'scheduled', label: 'Scheduled', emptyTitle: 'Nothing scheduled yet', emptyIcon: '📅' },
+  { id: 'feelings', label: 'Feelings 💌', emptyTitle: 'No feelings shared yet', emptyIcon: '💌' },
+  { id: 'to-buy', label: 'To Buy 🛒', emptyTitle: 'No items yet', emptyIcon: '🛒' }
 ];
 
 const categories = [
@@ -17,6 +19,20 @@ const categories = [
 
 const activeConnectionStorageKey = 'coupleWishlistActiveConnectionId';
 const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const toBuyCategories = ['Fashion', 'Electronics', 'Home', 'Travel', 'Gift', 'Personal', 'Other'];
+const toBuyStatuses = ['all', 'thinking', 'approved', 'bought', 'dropped'];
+const toBuyPriorities = ['low', 'medium', 'high'];
+const emptyToBuyDraft = {
+  title: '',
+  description: '',
+  amount: '',
+  productLink: '',
+  category: 'Other',
+  forUserId: 'both',
+  purchaseIntentDate: '',
+  priority: 'medium',
+  opinionQuestion: ''
+};
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
 
 function apiPath(path) {
@@ -39,8 +55,12 @@ function App() {
   const [activeConnectionId, setActiveConnectionId] = useState(localStorage.getItem(activeConnectionStorageKey) || '');
   const [items, setItems] = useState([]);
   const [calendarItems, setCalendarItems] = useState({});
+  const [feelings, setFeelings] = useState([]);
+  const [toBuyItems, setToBuyItems] = useState([]);
   const [activeTab, setActiveTab] = useState('wishlist');
   const [categoryFilter, setCategoryFilter] = useState('all');
+  const [toBuyStatusFilter, setToBuyStatusFilter] = useState('all');
+  const [toBuyCategoryFilter, setToBuyCategoryFilter] = useState('All');
   const [viewMode, setViewMode] = useState('list');
   const [calendarMonth, setCalendarMonth] = useState(startOfMonth(new Date()));
   const [selectedDate, setSelectedDate] = useState(toDateInputValue(new Date()));
@@ -50,6 +70,10 @@ function App() {
   const [category, setCategory] = useState('movie');
   const [addMode, setAddMode] = useState('');
   const [inviteCode, setInviteCode] = useState('');
+  const [feelingText, setFeelingText] = useState('');
+  const [toBuyDraft, setToBuyDraft] = useState(emptyToBuyDraft);
+  const [editingToBuyItem, setEditingToBuyItem] = useState(null);
+  const [opinionDrafts, setOpinionDrafts] = useState({});
   const [message, setMessage] = useState('');
   const [toast, setToast] = useState('');
   const [loading, setLoading] = useState(true);
@@ -58,6 +82,7 @@ function App() {
   const [isFriendsOpen, setIsFriendsOpen] = useState(false);
   const [isTourOpen, setIsTourOpen] = useState(false);
   const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
+  const [isToBuyModalOpen, setIsToBuyModalOpen] = useState(false);
 
   const activeTabMeta = tabs.find((tab) => tab.id === activeTab);
   const activeConnection = connections.find((connection) => connection.connectionId === activeConnectionId);
@@ -69,6 +94,9 @@ function App() {
   const selectedDateItems = (calendarItems[selectedDate] || [])
     .filter((item) => item.date)
     .filter((item) => categoryFilter === 'all' || itemCategory(item) === categoryFilter);
+  const visibleToBuyItems = toBuyItems
+    .filter((item) => toBuyStatusFilter === 'all' || item.status === toBuyStatusFilter)
+    .filter((item) => toBuyCategoryFilter === 'All' || item.category === toBuyCategoryFilter);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -150,6 +178,46 @@ function App() {
     setCalendarItems(await calendarResponse.json());
   }
 
+  async function loadFeelings(connectionId = activeConnectionId, currentUser = authUser) {
+    if (!currentUser || !connectionId) {
+      setFeelings([]);
+      return;
+    }
+
+    const params = new URLSearchParams({ connectionId });
+    const response = await fetch(apiPath(`/api/feelings?${params.toString()}`), {
+      headers: await getAuthHeaders(currentUser)
+    });
+
+    if (!response.ok) throw await responseError(response, 'Could not load feelings');
+
+    setFeelings(await response.json());
+  }
+
+  async function loadToBuyItems(connectionId = activeConnectionId, currentUser = authUser) {
+    if (!currentUser || !connectionId) {
+      setToBuyItems([]);
+      return;
+    }
+
+    const params = new URLSearchParams({ connectionId });
+    const response = await fetch(apiPath(`/api/to-buy?${params.toString()}`), {
+      headers: await getAuthHeaders(currentUser)
+    });
+
+    if (!response.ok) throw await responseError(response, 'Could not load to-buy items');
+
+    setToBuyItems(await response.json());
+  }
+
+  async function loadConnectionData(connectionId, currentUser = authUser) {
+    await Promise.all([
+      loadItems(connectionId, currentUser),
+      loadFeelings(connectionId, currentUser),
+      loadToBuyItems(connectionId, currentUser)
+    ]);
+  }
+
   function chooseActiveConnection(nextConnections, preferredConnectionId = activeConnectionId) {
     const savedConnectionId = localStorage.getItem(activeConnectionStorageKey);
     const nextActiveConnection =
@@ -184,6 +252,8 @@ function App() {
         setConnections([]);
         setItems([]);
         setCalendarItems({});
+        setFeelings([]);
+        setToBuyItems([]);
         setActiveConnectionId('');
         setLoading(false);
         return;
@@ -194,7 +264,7 @@ function App() {
         await loadProfile(currentUser);
         const nextConnections = await loadConnections(currentUser);
         const nextConnectionId = chooseActiveConnection(nextConnections);
-        await loadItems(nextConnectionId, currentUser);
+        await loadConnectionData(nextConnectionId, currentUser);
       } catch (error) {
         setMessage(`Could not load your account: ${error.message || 'Check Firebase configuration.'}`);
       } finally {
@@ -231,6 +301,8 @@ function App() {
     localStorage.setItem(activeConnectionStorageKey, connectionId);
     setItems([]);
     setCalendarItems({});
+    setFeelings([]);
+    setToBuyItems([]);
 
     await fetch(apiPath('/api/switch-connection'), {
       method: 'POST',
@@ -243,7 +315,173 @@ function App() {
 
     const nextConnections = await loadConnections();
     chooseActiveConnection(nextConnections, connectionId);
-    await loadItems(connectionId);
+    await loadConnectionData(connectionId);
+  }
+
+  async function shareFeeling(event) {
+    event.preventDefault();
+
+    if (!feelingText.trim() || !activeConnectionId) return;
+
+    const response = await fetch(apiPath('/api/feelings'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(await getAuthHeaders())
+      },
+      body: JSON.stringify({
+        connectionId: activeConnectionId,
+        text: feelingText
+      })
+    });
+
+    if (!response.ok) {
+      setMessage('Could not share feeling.');
+      return;
+    }
+
+    setFeelingText('');
+    setMessage('');
+    setToast('Feeling shared');
+    await loadFeelings();
+  }
+
+  async function deleteFeeling(feelingId) {
+    const response = await fetch(apiPath(`/api/feelings/${feelingId}`), {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(await getAuthHeaders())
+      },
+      body: JSON.stringify({ connectionId: activeConnectionId })
+    });
+
+    if (!response.ok) {
+      setMessage('Could not delete feeling.');
+      return;
+    }
+
+    setToast('Feeling deleted');
+    await loadFeelings();
+  }
+
+  function openToBuyModal(item = null) {
+    setEditingToBuyItem(item);
+    setToBuyDraft(
+      item
+        ? {
+            title: item.title || '',
+            description: item.description || '',
+            amount: item.amount ?? '',
+            productLink: item.productLink || '',
+            category: item.category || 'Other',
+            forUserId: item.forUserId || 'both',
+            purchaseIntentDate: item.purchaseIntentDate || '',
+            priority: item.priority || 'medium',
+            opinionQuestion: item.opinionQuestion || ''
+          }
+        : emptyToBuyDraft
+    );
+    setIsToBuyModalOpen(true);
+  }
+
+  function closeToBuyModal() {
+    setEditingToBuyItem(null);
+    setToBuyDraft(emptyToBuyDraft);
+    setIsToBuyModalOpen(false);
+  }
+
+  async function saveToBuyItem(event) {
+    event.preventDefault();
+    if (!toBuyDraft.title.trim() || !activeConnectionId) return;
+
+    const path = editingToBuyItem ? `/api/to-buy/${editingToBuyItem.id}` : '/api/to-buy';
+    const response = await fetch(apiPath(path), {
+      method: editingToBuyItem ? 'PATCH' : 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(await getAuthHeaders())
+      },
+      body: JSON.stringify({
+        ...toBuyDraft,
+        connectionId: activeConnectionId,
+        amount: toBuyDraft.amount === '' ? null : Number(toBuyDraft.amount),
+        purchaseIntentDate: toBuyDraft.purchaseIntentDate || null
+      })
+    });
+
+    if (!response.ok) {
+      setMessage('Could not save to-buy item.');
+      return;
+    }
+
+    closeToBuyModal();
+    setToast(editingToBuyItem ? 'Item updated' : 'Item added');
+    await loadToBuyItems();
+  }
+
+  async function updateToBuyStatus(item, status) {
+    const response = await fetch(apiPath(`/api/to-buy/${item.id}`), {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(await getAuthHeaders())
+      },
+      body: JSON.stringify({ connectionId: activeConnectionId, ...item, status })
+    });
+
+    if (!response.ok) {
+      setMessage('Could not update to-buy item.');
+      return;
+    }
+
+    setToast('Item updated');
+    await loadToBuyItems();
+  }
+
+  async function deleteToBuyItem(itemId) {
+    const response = await fetch(apiPath(`/api/to-buy/${itemId}`), {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(await getAuthHeaders())
+      },
+      body: JSON.stringify({ connectionId: activeConnectionId })
+    });
+
+    if (!response.ok) {
+      setMessage('Could not delete to-buy item.');
+      return;
+    }
+
+    setToast('Item deleted');
+    await loadToBuyItems();
+  }
+
+  async function sendToBuyOpinion(itemId) {
+    const opinion = opinionDrafts[itemId] || '';
+    if (!opinion.trim()) return;
+
+    const response = await fetch(apiPath(`/api/to-buy/${itemId}/opinion`), {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(await getAuthHeaders())
+      },
+      body: JSON.stringify({
+        connectionId: activeConnectionId,
+        partnerOpinion: opinion
+      })
+    });
+
+    if (!response.ok) {
+      setMessage('Could not send opinion.');
+      return;
+    }
+
+    setOpinionDrafts((drafts) => ({ ...drafts, [itemId]: '' }));
+    setToast('Opinion sent');
+    await loadToBuyItems();
   }
 
   async function addItem(event) {
@@ -367,7 +605,7 @@ function App() {
     setIsConnectOpen(false);
     const nextConnections = await loadConnections();
     chooseActiveConnection(nextConnections, nextConnectionId);
-    await loadItems(nextConnectionId);
+    await loadConnectionData(nextConnectionId);
   }
 
   if (loading) return <LoadingScreen />;
@@ -397,16 +635,6 @@ function App() {
           </p>
         </section>
 
-        <ConnectionPanel
-          inviteCode={inviteCode}
-          isOpen={isConnectOpen || connections.length === 0}
-          message={message}
-          onClose={() => setIsConnectOpen(false)}
-          onConnect={connectPartner}
-          onInviteCodeChange={setInviteCode}
-          userCode={profile?.inviteCode}
-        />
-
         <section className="rounded-2xl bg-white/80 p-4 shadow-sm ring-1 ring-black/5 backdrop-blur">
           {activeConnection ? (
             <>
@@ -414,12 +642,41 @@ function App() {
                 activeTab={activeTab}
                 onChange={(tab) => {
                   setActiveTab(tab);
-                  if (tab === 'wishlist') setViewMode('list');
+                  if (tab !== 'scheduled') setViewMode('list');
                 }}
               />
-              <CategoryFilter categoryFilter={categoryFilter} onChange={setCategoryFilter} />
+              {activeTab !== 'feelings' && activeTab !== 'to-buy' ? (
+                <CategoryFilter categoryFilter={categoryFilter} onChange={setCategoryFilter} />
+              ) : null}
               {activeTab === 'scheduled' ? <ViewToggle onChange={setViewMode} viewMode={viewMode} /> : null}
-              {activeTab !== 'scheduled' || viewMode === 'list' ? (
+              {activeTab === 'to-buy' ? (
+                <ToBuyView
+                  authUser={authUser}
+                  categoryFilter={toBuyCategoryFilter}
+                  connection={activeConnection}
+                  items={visibleToBuyItems}
+                  onAdd={() => openToBuyModal()}
+                  onCategoryFilterChange={setToBuyCategoryFilter}
+                  onDelete={deleteToBuyItem}
+                  onEdit={openToBuyModal}
+                  onOpinionChange={(itemId, value) => setOpinionDrafts((drafts) => ({ ...drafts, [itemId]: value }))}
+                  onSendOpinion={sendToBuyOpinion}
+                  onStatusChange={updateToBuyStatus}
+                  opinionDrafts={opinionDrafts}
+                  statusFilter={toBuyStatusFilter}
+                  onStatusFilterChange={setToBuyStatusFilter}
+                />
+              ) : activeTab === 'feelings' ? (
+                <FeelingsView
+                  authUser={authUser}
+                  connection={activeConnection}
+                  feelingText={feelingText}
+                  feelings={feelings}
+                  onDelete={deleteFeeling}
+                  onFeelingTextChange={setFeelingText}
+                  onSubmit={shareFeeling}
+                />
+              ) : activeTab !== 'scheduled' || viewMode === 'list' ? (
                 <ItemList
                   activeTab={activeTabMeta}
                   authUser={authUser}
@@ -448,7 +705,7 @@ function App() {
         </section>
       </div>
 
-      {activeConnection ? (
+      {activeConnection && activeTab !== 'feelings' && activeTab !== 'to-buy' ? (
         <button
           className="fixed bottom-5 right-5 grid h-14 w-14 place-items-center rounded-2xl bg-gray-950 text-3xl leading-none text-white shadow-md transition hover:-translate-y-0.5 hover:bg-gray-800 focus:outline-none focus:ring-4 focus:ring-pink-200"
           onClick={() => {
@@ -480,6 +737,29 @@ function App() {
           onSubmit={addItem}
           onTitleChange={setTitle}
           title={title}
+        />
+      ) : null}
+
+      {isToBuyModalOpen ? (
+        <ToBuyModal
+          authUser={authUser}
+          connection={activeConnection}
+          draft={toBuyDraft}
+          isEditing={Boolean(editingToBuyItem)}
+          onChange={(field, value) => setToBuyDraft((draft) => ({ ...draft, [field]: value }))}
+          onClose={closeToBuyModal}
+          onSubmit={saveToBuyItem}
+        />
+      ) : null}
+
+      {isConnectOpen || connections.length === 0 ? (
+        <ConnectionPanel
+          inviteCode={inviteCode}
+          message={message}
+          onClose={() => setIsConnectOpen(false)}
+          onConnect={connectPartner}
+          onInviteCodeChange={setInviteCode}
+          userCode={profile?.inviteCode}
         />
       ) : null}
 
@@ -566,6 +846,43 @@ function formatDateTime(dateString) {
   });
 }
 
+function relativeTime(dateString) {
+  if (!dateString) return 'just now';
+
+  const diffSeconds = Math.max(0, Math.floor((Date.now() - new Date(dateString).getTime()) / 1000));
+  const units = [
+    ['year', 31536000],
+    ['month', 2592000],
+    ['day', 86400],
+    ['hour', 3600],
+    ['minute', 60]
+  ];
+  const nextUnit = units.find(([, seconds]) => diffSeconds >= seconds);
+
+  if (!nextUnit) return 'just now';
+
+  const [label, seconds] = nextUnit;
+  const value = Math.floor(diffSeconds / seconds);
+  return `${value} ${label}${value === 1 ? '' : 's'} ago`;
+}
+
+function formatInr(amount) {
+  if (amount === null || amount === undefined || amount === '') return '';
+
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 0
+  }).format(Number(amount));
+}
+
+function toBuyForLabel(item, authUser, connection) {
+  if (item.forUserId === 'both') return 'Both';
+  if (item.forUserId === authUser.uid) return 'Me';
+  if (item.forUserId === connection?.partnerId) return 'Partner';
+  return 'Both';
+}
+
 function getCalendarDays(month) {
   const firstDay = startOfMonth(month);
   const startDate = new Date(firstDay);
@@ -632,6 +949,8 @@ function TopNav({
           <div className="relative" ref={menuRef}>
             <button
               className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-2 py-2 text-sm font-semibold text-gray-700 shadow-sm transition hover:border-gray-300 hover:bg-gray-50"
+              aria-expanded={isMenuOpen}
+              aria-label="Open account menu"
               onClick={() => setIsMenuOpen((isOpen) => !isOpen)}
               type="button"
             >
@@ -643,7 +962,14 @@ function TopNav({
                 </span>
               )}
               <span className="hidden max-w-28 truncate sm:block">{firstName(name)}</span>
-              <span className="px-1 text-gray-400">{isMenuOpen ? 'Up' : 'Down'}</span>
+              <svg
+                aria-hidden="true"
+                className={`h-4 w-4 text-gray-400 transition-transform ${isMenuOpen ? 'rotate-180' : ''}`}
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <path d="m6 9 6 6 6-6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              </svg>
             </button>
             {isMenuOpen ? (
               <div className="absolute right-0 mt-2 w-56 overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-md ring-1 ring-black/5">
@@ -758,33 +1084,61 @@ function ViewToggle({ onChange, viewMode }) {
   );
 }
 
-function ConnectionPanel({ inviteCode, isOpen, message, onClose, onConnect, onInviteCodeChange, userCode }) {
-  if (!isOpen) return null;
+function ConnectionPanel({ inviteCode, message, onClose, onConnect, onInviteCodeChange, userCode }) {
+  const [copyStatus, setCopyStatus] = useState('');
+
+  async function copyInviteCode() {
+    if (!userCode) return;
+
+    try {
+      await navigator.clipboard.writeText(userCode);
+      setCopyStatus('copied');
+      window.setTimeout(() => setCopyStatus(''), 1800);
+    } catch {
+      setCopyStatus('failed');
+      window.setTimeout(() => setCopyStatus(''), 2200);
+    }
+  }
 
   return (
-    <section className="grid gap-4 rounded-2xl bg-white/80 p-4 shadow-sm ring-1 ring-black/5 backdrop-blur sm:grid-cols-[1fr_1fr]">
-      <div>
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-gray-950/40 px-4 backdrop-blur-sm">
+      <section className="w-full max-w-md rounded-2xl bg-white p-5 shadow-md">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-xl font-semibold">Add Connection</p>
+            <h2 className="text-xl font-semibold">Add Connection</h2>
             <p className="mt-1 text-sm text-gray-600">Share your invite code or enter theirs once.</p>
           </div>
           <button
-            className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-sm font-semibold text-gray-600 hover:bg-gray-50"
+            aria-label="Close add connection"
+            className="rounded-xl border border-gray-200 px-3 py-1 text-sm font-semibold text-gray-600 hover:bg-gray-50"
             onClick={onClose}
             type="button"
           >
-            Hide
+            X
           </button>
         </div>
-        <div className="mt-4 rounded-2xl bg-pink-50 p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-pink-700">Your Invite Code</p>
-          <p className="mt-1 font-mono text-2xl font-semibold tracking-wide text-gray-950">{userCode || '...'}</p>
-        </div>
-      </div>
 
-      <div>
-        <form className="grid gap-3" onSubmit={onConnect}>
+        <div className="mt-5 rounded-2xl bg-pink-50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-pink-700">Your Invite Code</p>
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+            <p className="min-w-0 flex-1 rounded-xl bg-white px-3 py-3 font-mono text-xl font-semibold tracking-wide text-gray-950">
+              {userCode || '...'}
+            </p>
+            <button
+              className="rounded-xl bg-gray-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
+              disabled={!userCode}
+              onClick={copyInviteCode}
+              type="button"
+            >
+              {copyStatus === 'copied' ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+          {copyStatus === 'failed' ? (
+            <p className="mt-2 text-sm font-medium text-red-600">Could not copy. Select the code manually.</p>
+          ) : null}
+        </div>
+
+        <form className="mt-5 grid gap-3" onSubmit={onConnect}>
           <label className="grid gap-2">
             <span className="text-sm font-semibold text-gray-700">Friend or partner code</span>
             <input
@@ -800,10 +1154,17 @@ function ConnectionPanel({ inviteCode, isOpen, message, onClose, onConnect, onIn
           >
             Connect
           </button>
+          <button
+            className="rounded-xl border border-gray-200 px-4 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+            onClick={onClose}
+            type="button"
+          >
+            Cancel
+          </button>
         </form>
         {message ? <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">{message}</p> : null}
-      </div>
-    </section>
+      </section>
+    </div>
   );
 }
 
@@ -821,6 +1182,302 @@ function NoConnectionState({ onAddConnection }) {
         Add new connection
       </button>
     </div>
+  );
+}
+
+function ToBuyView({
+  authUser,
+  categoryFilter,
+  connection,
+  items,
+  onAdd,
+  onCategoryFilterChange,
+  onDelete,
+  onEdit,
+  onOpinionChange,
+  onSendOpinion,
+  onStatusChange,
+  opinionDrafts,
+  statusFilter,
+  onStatusFilterChange
+}) {
+  return (
+    <div className="mt-4 grid gap-4">
+      <div className="flex flex-col gap-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-xl font-semibold">To Buy</h2>
+          <p className="mt-1 text-sm text-gray-600">Plan purchases together and get opinions</p>
+        </div>
+        <button
+          className="rounded-xl bg-gray-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-gray-800"
+          onClick={onAdd}
+          type="button"
+        >
+          + Add Item
+        </button>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="grid gap-2 text-sm font-semibold text-gray-700">
+          Status
+          <select
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+            onChange={(event) => onStatusFilterChange(event.target.value)}
+            value={statusFilter}
+          >
+            {toBuyStatuses.map((status) => (
+              <option key={status} value={status}>
+                {status === 'all' ? 'All' : statusLabel(status)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="grid gap-2 text-sm font-semibold text-gray-700">
+          Category
+          <select
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+            onChange={(event) => onCategoryFilterChange(event.target.value)}
+            value={categoryFilter}
+          >
+            {['All', ...toBuyCategories].map((category) => (
+              <option key={category} value={category}>
+                {category}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-6 py-12 text-center">
+          <p className="text-4xl">🛒</p>
+          <h2 className="mt-3 text-xl font-semibold text-gray-950">No items yet</h2>
+          <p className="mt-1 text-sm text-gray-600">Add something you’re thinking of buying.</p>
+        </div>
+      ) : (
+        <div className="grid gap-4">
+          {items.map((item) => (
+            <ToBuyCard
+              authUser={authUser}
+              connection={connection}
+              item={item}
+              key={item.id}
+              onDelete={onDelete}
+              onEdit={onEdit}
+              onOpinionChange={onOpinionChange}
+              onSendOpinion={onSendOpinion}
+              onStatusChange={onStatusChange}
+              opinionValue={opinionDrafts[item.id] ?? item.partnerOpinion ?? ''}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToBuyCard({
+  authUser,
+  connection,
+  item,
+  onDelete,
+  onEdit,
+  onOpinionChange,
+  onSendOpinion,
+  onStatusChange,
+  opinionValue
+}) {
+  const isCreator = item.addedByUserId === authUser.uid;
+  const addedBy = isCreator ? 'You' : connection?.partnerName || 'Partner';
+  const opinionBy = item.partnerOpinionByUserId === authUser.uid ? 'You' : connection?.partnerName || 'Partner';
+
+  return (
+    <article className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h3 className="text-xl font-semibold text-gray-950">{item.title}</h3>
+          {item.description ? <p className="mt-1 text-sm text-gray-600">{item.description}</p> : null}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {item.amount !== null && item.amount !== undefined ? <Badge>{formatInr(item.amount)}</Badge> : null}
+            <Badge>{item.category || 'Other'}</Badge>
+            <Badge tone={priorityTone(item.priority)}>{statusLabel(item.priority || 'medium')}</Badge>
+            <Badge tone={statusTone(item.status)}>{statusLabel(item.status || 'thinking')}</Badge>
+          </div>
+        </div>
+        {item.productLink ? (
+          <a
+            className="rounded-xl border border-gray-200 px-3 py-2 text-center text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+            href={item.productLink}
+            rel="noreferrer"
+            target="_blank"
+          >
+            Open Link
+          </a>
+        ) : null}
+      </div>
+
+      <div className="mt-4 grid gap-2 border-t border-gray-100 pt-4 text-sm text-gray-500 sm:grid-cols-2">
+        <p>For: {toBuyForLabel(item, authUser, connection)}</p>
+        <p>Added by {addedBy}</p>
+        {item.purchaseIntentDate ? <p>Thinking of buying: {formatReadableDate(item.purchaseIntentDate)}</p> : null}
+        {item.opinionQuestion ? <p className="sm:col-span-2">Question: {item.opinionQuestion}</p> : null}
+      </div>
+
+      <div className="mt-4 rounded-2xl bg-gray-50 p-4">
+        <p className="text-sm font-semibold text-gray-700">Opinion</p>
+        {isCreator ? (
+          item.partnerOpinion ? (
+            <p className="mt-2 text-sm text-gray-700">
+              {item.partnerOpinion} <span className="text-gray-400">- {opinionBy}</span>
+            </p>
+          ) : (
+            <p className="mt-2 text-sm text-gray-500">Waiting for opinion…</p>
+          )
+        ) : (
+          <div className="mt-3 grid gap-2">
+            <textarea
+              className="min-h-20 rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+              onChange={(event) => onOpinionChange(item.id, event.target.value)}
+              placeholder="Share your opinion"
+              value={opinionValue}
+            />
+            <button
+              className="justify-self-start rounded-xl bg-pink-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-pink-700"
+              onClick={() => onSendOpinion(item.id)}
+              type="button"
+            >
+              Send Opinion
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50" onClick={() => onEdit(item)} type="button">
+          Edit
+        </button>
+        <button className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700" onClick={() => onStatusChange(item, 'bought')} type="button">
+          Mark as Bought
+        </button>
+        <button className="rounded-xl border border-emerald-100 px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-50" onClick={() => onStatusChange(item, 'approved')} type="button">
+          Approve
+        </button>
+        <button className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50" onClick={() => onStatusChange(item, 'dropped')} type="button">
+          Drop item
+        </button>
+        {isCreator ? (
+          <button className="rounded-xl border border-red-100 px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50" onClick={() => onDelete(item.id)} type="button">
+            Delete
+          </button>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function Badge({ children, tone = 'gray' }) {
+  const tones = {
+    gray: 'bg-gray-100 text-gray-700',
+    green: 'bg-emerald-100 text-emerald-700',
+    blue: 'bg-blue-100 text-blue-700',
+    amber: 'bg-amber-100 text-amber-700',
+    red: 'bg-red-100 text-red-700',
+    pink: 'bg-pink-100 text-pink-700'
+  };
+
+  return <span className={`rounded-full px-3 py-1 text-xs font-semibold ${tones[tone] || tones.gray}`}>{children}</span>;
+}
+
+function statusLabel(value) {
+  return String(value || '').replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+function statusTone(status) {
+  return {
+    approved: 'green',
+    bought: 'blue',
+    dropped: 'red',
+    thinking: 'amber'
+  }[status] || 'gray';
+}
+
+function priorityTone(priority) {
+  return {
+    high: 'red',
+    medium: 'amber',
+    low: 'green'
+  }[priority] || 'gray';
+}
+
+function FeelingsView({ authUser, connection, feelingText, feelings, onDelete, onFeelingTextChange, onSubmit }) {
+  return (
+    <div className="mt-4 grid gap-4">
+      <form className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5" onSubmit={onSubmit}>
+        <label className="grid gap-2">
+          <span className="text-sm font-semibold text-gray-700">Share a feeling</span>
+          <textarea
+            className="min-h-28 rounded-xl border border-gray-200 px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+            onChange={(event) => onFeelingTextChange(event.target.value)}
+            placeholder="What are you feeling?"
+            value={feelingText}
+          />
+        </label>
+        <div className="mt-3 flex justify-end">
+          <button
+            className="rounded-xl bg-pink-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-pink-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+            disabled={!feelingText.trim()}
+            type="submit"
+          >
+            Share
+          </button>
+        </div>
+      </form>
+
+      {feelings.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-6 py-12 text-center">
+          <p className="text-4xl">💌</p>
+          <h2 className="mt-3 text-xl font-semibold text-gray-950">No feelings shared yet</h2>
+          <p className="mt-1 text-sm text-gray-600">Write a small note when you want to be understood.</p>
+        </div>
+      ) : (
+        <div className="grid gap-3">
+          {feelings.map((feeling) => (
+            <FeelingCard
+              authUser={authUser}
+              connection={connection}
+              feeling={feeling}
+              key={feeling.id}
+              onDelete={onDelete}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FeelingCard({ authUser, connection, feeling, onDelete }) {
+  const isOwn = feeling.userId === authUser.uid;
+  const addedBy = isOwn ? 'You' : connection?.partnerName || 'Partner';
+
+  return (
+    <article className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
+      <p className="whitespace-pre-wrap text-sm leading-6 text-gray-800">{feeling.text}</p>
+      <div className="mt-4 flex flex-col gap-3 border-t border-gray-100 pt-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-gray-500">
+          Added by {addedBy} - {relativeTime(feeling.createdAt)}
+        </p>
+        {isOwn ? (
+          <button
+            className="self-start rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 sm:self-auto"
+            onClick={() => onDelete(feeling.id)}
+            type="button"
+          >
+            Delete
+          </button>
+        ) : null}
+      </div>
+    </article>
   );
 }
 
@@ -1182,6 +1839,163 @@ function AddItemModal({
           </div>
         </form>
         )}
+      </section>
+    </div>
+  );
+}
+
+function ToBuyModal({ authUser, connection, draft, isEditing, onChange, onClose, onSubmit }) {
+  const forOptions = [
+    { label: 'Me', value: authUser.uid },
+    { label: 'Partner', value: connection?.partnerId || '' },
+    { label: 'Both', value: 'both' }
+  ].filter((option) => option.value);
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-gray-950/40 px-4 backdrop-blur-sm">
+      <section className="max-h-[90vh] w-full max-w-lg overflow-auto rounded-2xl bg-white p-5 shadow-md">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-semibold">{isEditing ? 'Edit Item' : 'Add Item'}</h2>
+            <p className="mt-1 text-sm text-gray-600">Plan purchases together and get opinions.</p>
+          </div>
+          <button
+            className="rounded-xl border border-gray-200 px-3 py-1 text-sm font-semibold text-gray-600 hover:bg-gray-50"
+            onClick={onClose}
+            type="button"
+          >
+            Close
+          </button>
+        </div>
+
+        <form className="mt-5 grid gap-4" onSubmit={onSubmit}>
+          <label className="grid gap-2">
+            <span className="text-sm font-semibold text-gray-700">Title</span>
+            <input
+              className="rounded-xl border border-gray-200 px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+              onChange={(event) => onChange('title', event.target.value)}
+              required
+              value={draft.title}
+            />
+          </label>
+
+          <label className="grid gap-2">
+            <span className="text-sm font-semibold text-gray-700">Description</span>
+            <textarea
+              className="min-h-20 rounded-xl border border-gray-200 px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+              onChange={(event) => onChange('description', event.target.value)}
+              value={draft.description}
+            />
+          </label>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold text-gray-700">Amount</span>
+              <input
+                className="rounded-xl border border-gray-200 px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+                min="0"
+                onChange={(event) => onChange('amount', event.target.value)}
+                placeholder="₹"
+                type="number"
+                value={draft.amount}
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold text-gray-700">Category</span>
+              <select
+                className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+                onChange={(event) => onChange('category', event.target.value)}
+                value={draft.category}
+              >
+                {toBuyCategories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <label className="grid gap-2">
+            <span className="text-sm font-semibold text-gray-700">Product Link</span>
+            <input
+              className="rounded-xl border border-gray-200 px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+              onChange={(event) => onChange('productLink', event.target.value)}
+              placeholder="https://"
+              type="url"
+              value={draft.productLink}
+            />
+          </label>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold text-gray-700">Who is it for?</span>
+              <select
+                className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+                onChange={(event) => onChange('forUserId', event.target.value)}
+                value={draft.forUserId}
+              >
+                {forOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold text-gray-700">Thinking of buying on</span>
+              <input
+                className="rounded-xl border border-gray-200 px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+                onChange={(event) => onChange('purchaseIntentDate', event.target.value)}
+                type="date"
+                value={draft.purchaseIntentDate}
+              />
+            </label>
+          </div>
+
+          <label className="grid gap-2">
+            <span className="text-sm font-semibold text-gray-700">Priority</span>
+            <select
+              className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+              onChange={(event) => onChange('priority', event.target.value)}
+              value={draft.priority}
+            >
+              {toBuyPriorities.map((priority) => (
+                <option key={priority} value={priority}>
+                  {statusLabel(priority)}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="grid gap-2">
+            <span className="text-sm font-semibold text-gray-700">Opinion question</span>
+            <textarea
+              className="min-h-20 rounded-xl border border-gray-200 px-3 py-3 text-sm outline-none transition focus:border-pink-400 focus:ring-4 focus:ring-pink-100"
+              onChange={(event) => onChange('opinionQuestion', event.target.value)}
+              placeholder="What do you think about this?"
+              value={draft.opinionQuestion}
+            />
+          </label>
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button
+              className="flex-1 rounded-xl bg-gray-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-gray-800"
+              type="submit"
+            >
+              {isEditing ? 'Save Changes' : 'Add Item'}
+            </button>
+            <button
+              className="rounded-xl border border-gray-200 px-4 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+              onClick={onClose}
+              type="button"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
       </section>
     </div>
   );
